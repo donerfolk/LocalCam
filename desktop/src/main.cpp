@@ -39,13 +39,14 @@ constexpr wchar_t kSettingsKey[] = L"Software\\LocalCam";
 constexpr wchar_t kCameraKey[] = L"CLSID\\{DD86CB9D-7004-4ECC-80AD-103B020E7974}\\InprocServer32";
 constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr DWORD kDefaultPort = 47474;
-enum Command { kShow = 1, kCopyLink, kStartup, kNewCode, k720 = 10, k1080, k30 = 20, k60, kMirror = 30, kRotate0 = 40,
+enum Command { kShow = 1, kCopyLink, kStartup, kNewCode, kKeepRunning, k720 = 10, k1080, k30 = 20, k60, kMirror = 30, kRotate0 = 40,
                kRotateLeft = 50, kRotateRight, kShape0 = 60, kQuality0 = 70, kPower = 80, kExit = 99, kAddress0 = 100 };
 enum Shape { kWide, kStandard, kPortrait };
 
 // Settings live in HKCU\Software\LocalCam. The phone-facing ones are read from connection threads.
 std::atomic<int> g_height{1080}, g_fps{30}, g_rotate{0}, g_shape{kWide}, g_quality{1};  // g_height: the short side
 std::atomic<bool> g_mirror{false};
+bool g_keepRunning = true;  // closing the window hides it to the tray; off: closing quits
 std::atomic<bool> g_on{true}, g_phoneConnected{false};  // g_on: the on/off switch, on at every start
 std::string g_token, g_url, g_address;  // g_url: the phone page at g_address, one of g_ips
 std::vector<std::string> g_ips;
@@ -648,6 +649,7 @@ void showMenu() {
     AppendMenuW(menu, item(g_mirror), kMirror, L"Mirror");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, item(startsWithWindows()), kStartup, L"Start with Windows");
+    AppendMenuW(menu, item(g_keepRunning), kKeepRunning, L"Keep running when closed");
     AppendMenuW(menu, MF_STRING, kExit, L"Exit");
     SetMenuDefaultItem(menu, kShow, FALSE);
     POINT p;
@@ -677,6 +679,9 @@ void onCommand(int id) {
         balloon(L"Phone link copied. It works only on this network.");
     } else if (id == kStartup) {
         setStartsWithWindows(!startsWithWindows());
+    } else if (id == kKeepRunning) {
+        g_keepRunning = !g_keepRunning;
+        regSet(L"KeepRunning", g_keepRunning);
     } else if (id == kNewCode) {
         if (MessageBoxW(g_hwnd, L"Old QR codes, links and bookmarks stop working, and the phone streaming now is "
                                 L"disconnected. Scan the new QR code to connect again.",
@@ -739,10 +744,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_PAINT: paint(hwnd); return 0;
     case WM_ERASEBKGND: return 1;
-    case WM_CLOSE: {  // keep running in the tray: the camera needs us
+    case WM_CLOSE: {  // by default keep running in the tray: the camera needs us
+        if (!g_keepRunning) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
         ShowWindow(hwnd, SW_HIDE);
         static bool told = false;  // closing looks like quitting, so say where LocalCam went, once per run
-        if (!told) balloon(L"LocalCam is still running in the tray, so video apps keep the camera. To quit, right-click the tray icon and choose Exit.");
+        if (!told) balloon(L"LocalCam is still running in the tray, so video apps keep the camera. To quit, right-click the tray icon "
+                           L"and choose Exit, or turn off \"Keep running when closed\" there.");
         told = true;
         return 0;
     }
@@ -805,6 +815,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     g_fps = regGet(L"Fps", 30) == 60 ? 60 : 30;
     g_rotate = int(regGet(L"Rotate", 0) & 3);
     g_mirror = regGet(L"Mirror", 0) != 0;
+    g_keepRunning = regGet(L"KeepRunning", 1) != 0;
     g_shape = int(std::min<DWORD>(regGet(L"Shape", kWide), kPortrait));
     g_quality = int(std::min<DWORD>(regGet(L"Quality", 1), 2));
     g_port = int(regGet(L"Port", kDefaultPort));

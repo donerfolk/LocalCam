@@ -94,6 +94,7 @@ Keep the phone's browser open and unlocked. Tap **Screen off** to black out the 
 - Frame rate: 30 or 60 fps
 - Quality: low / normal / high
 - Start with Windows
+- Keep running when the window is closed (on by default; turn it off to quit with the window)
 - Copy the phone link
 - New pairing code (old links stop working)
 - Select network adapter (useful on PCs with multiple adapters)
