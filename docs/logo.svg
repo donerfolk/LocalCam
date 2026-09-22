@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180" role="img" aria-label="LocalCam logo">
+  <rect width="180" height="180" rx="40" fill="#2563eb"/>
+  <rect x="64" y="41" width="50" height="26" rx="6" fill="#fff"/>
+  <rect x="25" y="59" width="130" height="84" rx="12" fill="#fff"/>
+  <circle cx="90" cy="101" r="28" fill="#2563eb"/>
+  <circle cx="90" cy="101" r="15" fill="#fff"/>
+</svg>

@@ -1,0 +1,41 @@
+name: Bug report
+description: Something doesn't work as it should
+body:
+  - type: markdown
+    attributes:
+      value: Please leave out the phone link, the QR code and the pairing code (the `t=` part of the link). Anyone who has them can stream to your PC.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: LocalCam version
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+  - type: input
+    id: phone
+    attributes:
+      label: Phone and browser
+      placeholder: Pixel 8, Chrome
+  - type: input
+    id: app
+    attributes:
+      label: Video app
+      placeholder: Zoom, Teams, OBS
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Optional. Run `LocalCam.exe 2> log.txt`, reproduce the problem, then paste the file here.
+      render: text

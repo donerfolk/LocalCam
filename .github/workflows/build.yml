@@ -1,0 +1,116 @@
+# Builds and tests every push. On a v* tag it also signs (when a certificate is configured), publishes a GitHub
+# release with the installer and updates the winget package. Each secret reaches only the step that uses it.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      SIGN: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.SIGNING_PFX != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build
+        run: |
+          cmake -S desktop -B build -A x64
+          cmake --build build --config Release
+          cmake -S desktop -B build32 -A Win32
+          cmake --build build32 --config Release --target softcam
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else echo "VERSION=0.0.0-dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"; fi
+
+      - name: Sign binaries
+        if: env.SIGN == 'true'
+        env:
+          SIGNING_PFX: ${{ secrets.SIGNING_PFX }}  # base64 of a code-signing .pfx
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          $pfx = "$env:RUNNER_TEMP\sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX))
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          try {
+            & $signtool sign /f $pfx /p $env:SIGNING_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 `
+              build\bin\Release\LocalCam.exe build\bin\Release\softcam.dll build32\bin\Release\softcam.dll
+          } finally { Remove-Item $pfx }
+
+      - name: Installer
+        run: |
+          choco install innosetup --version 6.7.1 --no-progress -y
+          iscc /DAppVersion=$env:VERSION installer\LocalCam.iss
+
+      - name: Sign installer
+        if: env.SIGN == 'true'
+        env:
+          SIGNING_PFX: ${{ secrets.SIGNING_PFX }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          $pfx = "$env:RUNNER_TEMP\sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX))
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          try {
+            & $signtool sign /f $pfx /p $env:SIGNING_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 `
+              installer\Output\LocalCam-$env:VERSION-setup.exe
+          } finally { Remove-Item $pfx }
+
+      # Off tags a full artifact quota must not fail the build; on a tag the release job needs this upload.
+      - uses: actions/upload-artifact@v4
+        continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        with:
+          retention-days: 7
+          name: LocalCam-${{ env.VERSION }}
+          path: installer/Output/*.exe
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.exe --generate-notes
+
+  # Updates an existing winget package; the first version has to be submitted to microsoft/winget-pkgs by hand.
+  # A job of its own, so the winget token never shares a runner with the signing certificate.
+  winget:
+    needs: release
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}  # classic PAT with public_repo, for winget-pkgs PRs
+    steps:
+      - if: env.WINGET_TOKEN != ''
+        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e  # v2
+        with:
+          identifier: LocalCam.LocalCam
+          release-tag: ${{ github.ref_name }}
+          installers-regex: '-setup\.exe$'
+          token: ${{ env.WINGET_TOKEN }}

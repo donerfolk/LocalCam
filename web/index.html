@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>LocalCam</title>
+<style>
+  :root { color-scheme: dark; font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  html, body { margin: 0; height: 100%; background: #000; color: #f4f4f5; overflow: hidden; touch-action: manipulation; }
+  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  video.mirror { transform: scaleX(-1); }
+  #top { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px; right: 16px; display: flex; justify-content: center; pointer-events: none; }
+  #status { background: rgb(24 24 27 / 0.6); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); padding: 6px 14px; border-radius: 999px; font-size: 14px; font-variant-numeric: tabular-nums; }
+  #status.live::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: #ef4444; vertical-align: 1px; animation: pulse 2s infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center;
+         padding: 24px 16px max(16px, env(safe-area-inset-bottom)); background: linear-gradient(transparent, rgb(0 0 0 / 0.75)); }
+  button, label { font: inherit; color: inherit; background: rgb(255 255 255 / 0.16); border: 0; border-radius: 999px; min-height: 44px;
+                   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); transition: background 0.15s, color 0.15s, transform 0.1s; }
+  button { font-weight: 600; }
+  button:active { transform: scale(0.96); }
+  button:focus-visible { outline: 2px solid #a1a1aa; outline-offset: 2px; }
+  button { padding: 0 18px; }
+  button[aria-pressed="true"] { background: #f4f4f5; color: #000; }
+  label { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 16px; }
+  label button { min-height: 32px; padding: 0 12px; }
+  input[type="range"] { width: 110px; accent-color: #f4f4f5; }
+  select { font: inherit; color: inherit; background: transparent; border: 0; max-width: 150px; min-height: 44px; padding-right: 10px; }
+  body:not(.more) .extra { display: none; }  /* rarely used controls wait behind "More" */
+  #msg { position: fixed; left: 16px; right: 16px; top: 50%; transform: translateY(-50%); max-width: 420px; margin: 0 auto; padding: 20px;
+         border-radius: 16px; background: #18181b; border: 1px solid #27272a; box-shadow: 0 16px 48px rgb(0 0 0 / 0.5); text-align: center; }
+  #msg p { margin: 0 0 16px; }
+  #msg p:last-child { margin: 0; }
+  #msg button { background: #f4f4f5; color: #18181b; }
+  #black { position: fixed; inset: 0; background: #000; display: flex; align-items: flex-end; justify-content: center;
+           padding-bottom: max(40px, env(safe-area-inset-bottom)); color: #52525b; font-size: 14px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<video id="video" autoplay muted playsinline></video>
+<div id="top"><div id="status">Connecting…</div></div>
+<div id="bar">
+  <button id="power" type="button">Turn off</button>
+  <button id="flip" type="button" hidden>Switch camera</button>
+  <button id="rotate" type="button">Rotate</button>
+  <button id="torch" type="button" aria-pressed="false" hidden>Torch</button>
+  <label id="zoomBox" hidden>Zoom <input id="zoom" type="range"></label>
+  <label id="focusBox" class="extra" hidden>Focus <input id="focus" type="range"> <button id="autofocus" type="button" aria-pressed="true">Auto</button></label>
+  <label id="lensBox" class="extra" hidden>Lens <select id="lens"></select></label>
+  <label id="exposureBox" class="extra" hidden>Exposure <input id="exposure" type="range"></label>
+  <button id="lock" class="extra" type="button" aria-pressed="false" hidden>Lock exposure</button>
+  <button id="more" type="button" aria-pressed="false" hidden>More</button>
+  <button id="dim" type="button">Screen off</button>
+</div>
+<div id="msg" hidden><p id="msgText"></p><p><button id="msgButton" type="button" hidden></button></p></div>
+<div id="black" hidden>Still streaming. Tap to turn the screen back on.</div>
+<script>
+'use strict';
+// LocalCam phone page: camera → WebCodecs H.264 encoder → one WebSocket message per frame. See docs/PROTOCOL.md.
+const $ = id => document.getElementById(id);
+const video = $('video');
+const params = new URLSearchParams(location.search);
+const token = params.get('t') || '';
+const compat = params.has('compat');  // test hook: force the Safari code paths (frame callback + avc→Annex B)
+
+let cfg = null;           // {width, height, fps} from the PC
+let ws = null, retries = 0, replaced = false, unpaired = false;
+let stream = null, track = null, generation = 0;
+let enc = null;           // {encoder, width, height, bitrate, avcc}
+let wantKey = true;
+let cameraId = load('camera');  // picked in the lens list; none = the default camera on the chosen side
+let stats = { frames: 0, bytes: 0, encodeMs: 0, encoded: 0, dropped: 0 };
+const bitsPerPixel = { low: 0.05, normal: 0.1, high: 0.2 };  // the PC's Quality setting
+let scale = 1, calm = 0;  // adaptive bitrate: share of the Quality bitrate the Wi-Fi currently carries
+const encodeStart = new Map();
+
+function load(key) { try { return localStorage.getItem(key); } catch { return null; } }
+function save(key, value) { try { localStorage.setItem(key, value); } catch {} }
+function show(text, live = false) { $('status').textContent = text; $('status').classList.toggle('live', live); }
+function message(text, button, onClick) {
+  $('msg').hidden = !text;
+  $('msgText').textContent = text || '';
+  $('msgButton').hidden = !button;
+  $('msgButton').textContent = button || '';
+  $('msgButton').onclick = onClick || null;
+}
+const send = m => ws && ws.readyState === 1 && ws.send(JSON.stringify(m));
+
+// --- Connection to the PC, reconnecting until it answers ---
+function connect() {
+  ws = new WebSocket(`wss://${location.host}/ws?t=${encodeURIComponent(token)}`);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { retries = 0; wantKey = true; message(''); show('Connected'); };
+  ws.onmessage = e => { if (typeof e.data === 'string') onMessage(JSON.parse(e.data)); };
+  ws.onclose = () => {
+    closeEncoder();
+    if (replaced) {
+      stopCamera();
+      show('Paused');
+      message('Another device is now the camera.', 'Use this phone', () => { replaced = false; message(''); connect(); });
+      return;
+    }
+    if (unpaired) {  // this link's token no longer works: reconnecting can't help
+      stopCamera();
+      show('Not connected');
+      message('LocalCam on your PC has a new pairing code. Scan the new QR code to connect again.');
+      return;
+    }
+    show(retries > 2 ? 'Can’t reach your PC, retrying…' : 'Reconnecting…');
+    if (retries > 2) message('Can’t reach LocalCam. Make sure it’s running on your PC and that both are on the same Wi-Fi.');
+    setTimeout(connect, Math.min(1000 * 2 ** retries++, 5000));
+  };
+}
+
+function onMessage(m) {
+  if (m.type === 'config') {
+    const changed = !cfg || m.width !== cfg.width || m.height !== cfg.height || m.fps !== cfg.fps;
+    cfg = m;
+    if (enc && enc.encoder) retarget();  // Quality may have changed
+    $('rotate').textContent = m.rotate ? `Rotate · ${m.rotate}°` : 'Rotate';
+    $('power').textContent = m.on === false ? 'Turn on' : 'Turn off';
+    if (m.on === false) {  // switched off: release the camera (its light goes out) but stay connected
+      stopCamera();
+      closeEncoder();
+      show('Camera off');
+    } else if (changed || !track || track.readyState === 'ended') {
+      startCamera();
+    }
+  } else if (m.type === 'key') {
+    wantKey = true;
+  } else if (m.type === 'ping') {
+    send({ type: 'pong', t: m.t });
+  } else if (m.type === 'replaced') {
+    replaced = true;
+  } else if (m.type === 'unpaired') {
+    unpaired = true;
+  }
+}
+
+// --- Camera ---
+function stopCamera() {
+  generation++;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = track = null;
+}
+
+async function startCamera() {
+  stopCamera();
+  closeEncoder();
+  const mine = generation;
+  show('Starting camera…');
+  let s;
+  try {
+    const which = cameraId ? { deviceId: { exact: cameraId } } : { facingMode: { ideal: load('facing') || 'environment' } };
+    s = await navigator.mediaDevices.getUserMedia({ audio: false, video: {
+      ...which, width: { ideal: cfg.width }, height: { ideal: cfg.height }, frameRate: { ideal: cfg.fps } } });
+  } catch (e) {
+    if (cameraId && (e.name === 'OverconstrainedError' || e.name === 'NotFoundError')) {  // that camera is gone
+      cameraId = null;
+      save('camera', '');
+      return startCamera();
+    }
+    message(e.name === 'NotAllowedError'
+      ? 'Camera access is blocked. Allow the camera for this site in your browser settings, then reload.'
+      : `Can’t open the camera: ${e.message}`, 'Reload', () => location.reload());
+    return;
+  }
+  if (mine !== generation) { s.getTracks().forEach(t => t.stop()); return; }  // a newer start won
+  stream = s;
+  track = s.getVideoTracks()[0];
+  video.srcObject = s;
+  video.classList.toggle('mirror', track.getSettings().facingMode === 'user');
+  video.play().catch(() => {});
+  setupControls();
+  pump(mine);
+}
+
+// Feeds camera frames to onFrame until the camera is restarted.
+function pump(mine) {
+  if (window.MediaStreamTrackProcessor && !compat) {  // Chrome: frames straight from the track
+    const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+    (async () => {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        if (mine !== generation) { value.close(); reader.cancel(); return; }
+        onFrame(value);
+      }
+    })();
+  } else {  // Safari: grab each frame the video element presents
+    const tick = now => {
+      if (mine !== generation) return;
+      try { onFrame(new VideoFrame(video, { timestamp: Math.round(now * 1000) })); } catch {}
+      video.requestVideoFrameCallback(tick);
+    };
+    video.requestVideoFrameCallback(tick);
+  }
+}
+
+// --- Encoding ---
+function onFrame(frame) {
+  const width = frame.displayWidth & ~1, height = frame.displayHeight & ~1;
+  if (!enc || enc.width !== width || enc.height !== height) { closeEncoder(); openEncoder(width, height); }
+  const backlog = ws && ws.readyState === 1 && ws.bufferedAmount > enc.bitrate / 40;  // drop rather than queue past ~200 ms
+  const busy = !enc.encoder || enc.encoder.state !== 'configured' || enc.encoder.encodeQueueSize > 1
+    || !ws || ws.readyState !== 1 || backlog;
+  if (busy) { if (backlog) stats.dropped++; frame.close(); return; }
+  if (encodeStart.size > 100) encodeStart.clear();
+  encodeStart.set(frame.timestamp, performance.now());
+  enc.encoder.encode(frame, { keyFrame: wantKey });
+  wantKey = false;
+  frame.close();
+}
+
+async function openEncoder(width, height) {
+  const e = enc = { encoder: null, width, height, bitrate: targetBitrate(width, height), avcc: null, config: null };
+  const config = e.config = await pickConfig(width, height, e.bitrate);
+  if (enc !== e) return;
+  if (!config) { message(`This browser can’t encode ${width}×${height} H.264 video.`); return; }
+  e.encoder = new VideoEncoder({
+    output: (chunk, meta) => onChunk(e, chunk, meta),
+    error: err => { console.error('encoder error', err); if (enc === e) closeEncoder(); },
+  });
+  e.encoder.configure(config);
+  wantKey = true;
+}
+
+function targetBitrate(width, height) {
+  return Math.round(width * height * cfg.fps * (bitsPerPixel[cfg.quality] || 0.1) * scale);
+}
+
+// Once a second: back off when frames piled up on the socket, creep back up after 5 calm seconds.
+function adapt(dropped, sent) {
+  if (!enc || !enc.encoder || enc.encoder.state !== 'configured') return;
+  calm = dropped ? 0 : calm + 1;
+  if (dropped > sent / 10 + 1) scale = Math.max(0.15, scale * 0.7);
+  else if (calm >= 5 && scale < 1) { scale = Math.min(1, scale * 1.2); calm = 0; }
+  else return;
+  retarget();
+}
+
+// Reconfiguring keeps the stream going; a new SPS/PPS, if any, arrives with the encoder's next keyframe.
+function retarget() {
+  const bitrate = targetBitrate(enc.width, enc.height);
+  if (!enc.config || enc.encoder.state !== 'configured' || bitrate === enc.bitrate) return;
+  enc.bitrate = enc.config.bitrate = bitrate;
+  enc.encoder.configure(enc.config);
+}
+
+function closeEncoder() {
+  if (enc && enc.encoder && enc.encoder.state !== 'closed') enc.encoder.close();
+  enc = null;
+}
+
+async function pickConfig(width, height, bitrate) {
+  const fps = cfg.fps, mbs = Math.ceil(width / 16) * Math.ceil(height / 16), rate = mbs * fps;
+  const level = mbs <= 3600 && rate <= 108000 ? '1f' : mbs <= 5120 && rate <= 216000 ? '20' : mbs <= 8192 && rate <= 245760 ? '28' : '2a';
+  for (const profile of ['42e0', '4d40', '6400']) {        // constrained baseline, main, high
+    for (const format of compat ? ['avc'] : ['annexb', 'avc']) {
+      const config = { codec: `avc1.${profile}${level}`, width, height, bitrate: Math.round(bitrate), framerate: fps,
+                       latencyMode: 'realtime', avc: { format } };
+      try { if ((await VideoEncoder.isConfigSupported(config)).supported) return config; } catch {}
+    }
+  }
+  return null;
+}
+
+function onChunk(e, chunk, meta) {
+  const dc = meta && meta.decoderConfig;
+  if (dc) {
+    if (dc.description) e.avcc = parseAvcC(dc.description);
+    send({ type: 'orientation', rotation: dc.rotation || 0, flip: !!dc.flip });
+  }
+  let data = new Uint8Array(chunk.byteLength);
+  chunk.copyTo(data);
+  if (e.avcc) data = toAnnexB(data, e.avcc, chunk.type === 'key');  // encoder chose length-prefixed (avc) output
+  const t0 = encodeStart.get(chunk.timestamp);
+  if (t0 !== undefined) { encodeStart.delete(chunk.timestamp); stats.encodeMs += performance.now() - t0; stats.encoded++; }
+  if (ws && ws.readyState === 1) { ws.send(data); stats.frames++; stats.bytes += data.length; }
+}
+
+// avcC (ISO 14496-15) → NAL length size and the SPS/PPS NAL units.
+function parseAvcC(description) {
+  const d = description instanceof ArrayBuffer ? new Uint8Array(description)
+    : new Uint8Array(description.buffer, description.byteOffset, description.byteLength);
+  const nals = [];
+  let i = 5;
+  for (const mask of [0x1f, 0xff]) {  // SPS count is the low 5 bits, PPS count a full byte
+    for (let n = d[i++] & mask; n > 0; n--) {
+      const len = d[i] << 8 | d[i + 1];
+      nals.push(d.slice(i + 2, i + 2 + len));
+      i += 2 + len;
+    }
+  }
+  return { lengthSize: (d[4] & 3) + 1, nals };
+}
+
+// Length-prefixed NAL units → Annex B start codes, with SPS/PPS in front of keyframes.
+function toAnnexB(data, avcc, key) {
+  const parts = key ? [...avcc.nals] : [];
+  for (let i = 0; i + avcc.lengthSize <= data.length;) {
+    let len = 0;
+    for (let k = 0; k < avcc.lengthSize; k++) len = len * 256 + data[i++];
+    parts.push(data.subarray(i, i + len));
+    i += len;
+  }
+  const out = new Uint8Array(parts.reduce((sum, p) => sum + 4 + p.length, 0));
+  let o = 0;
+  for (const p of parts) { out.set([0, 0, 0, 1], o); out.set(p, o + 4); o += 4 + p.length; }
+  return out;
+}
+
+setInterval(() => {
+  if (enc && enc.encoder && stats.frames) {
+    const mbps = stats.bytes * 8 / 1e6;
+    show(`${enc.width}×${enc.height} · ${stats.frames} fps · ${mbps.toFixed(1)} Mbps`, true);
+    send({ type: 'stats', encodeMs: Math.round(stats.encodeMs / Math.max(stats.encoded, 1)), fps: stats.frames, kbps: Math.round(mbps * 1000) });
+  }
+  adapt(stats.dropped, stats.frames);
+  stats = { frames: 0, bytes: 0, encodeMs: 0, encoded: 0, dropped: 0 };
+}, 1000);
+
+// --- Controls: shown only when this phone's browser supports them ---
+const apply = c => track && track.applyConstraints({ advanced: [c] }).catch(() => {});
+
+function setupControls() {
+  const caps = track.getCapabilities ? track.getCapabilities() : {}, now = track.getSettings();
+  $('torch').hidden = !caps.torch;
+  $('torch').setAttribute('aria-pressed', 'false');
+  const zoomKey = 'zoom-' + now.deviceId, zoom = load(zoomKey);  // remembered per camera
+  setupRange('zoom', caps.zoom, zoom !== null ? +zoom : now.zoom, v => { save(zoomKey, v); apply({ zoom: v }); });
+  if (caps.zoom && zoom !== null) apply({ zoom: +$('zoom').value });  // the slider clamped it to this camera's range
+  const manualFocus = caps.focusDistance && caps.focusMode && caps.focusMode.includes('manual');
+  setupRange('focus', manualFocus && caps.focusDistance, now.focusDistance, v => {
+    $('autofocus').setAttribute('aria-pressed', 'false');
+    apply({ focusMode: 'manual', focusDistance: v });
+  });
+  $('autofocus').hidden = !caps.focusMode || !caps.focusMode.includes('continuous');
+  $('autofocus').setAttribute('aria-pressed', String(now.focusMode !== 'manual'));
+  setupRange('exposure', caps.exposureCompensation, now.exposureCompensation, v => apply({ exposureCompensation: v }));
+  // Lock holds today's exposure and white balance, so they stop pumping as people move. Each goes in its own
+  // call: the browser drops a constraint set whole if any part of it is unsupported.
+  const lockable = ['exposureMode', 'whiteBalanceMode']
+    .filter(k => caps[k] && caps[k].includes('manual') && caps[k].includes('continuous'));
+  $('lock').hidden = !lockable.length;
+  $('lock').setAttribute('aria-pressed', 'false');
+  $('lock').onclick = () => {
+    const on = $('lock').getAttribute('aria-pressed') !== 'true', current = track.getSettings();
+    $('lock').setAttribute('aria-pressed', String(on));
+    if (lockable.includes('exposureMode'))
+      apply(on ? { exposureMode: 'manual', exposureTime: current.exposureTime } : { exposureMode: 'continuous' });
+    if (lockable.includes('whiteBalanceMode'))
+      apply(on ? { whiteBalanceMode: 'manual', colorTemperature: current.colorTemperature } : { whiteBalanceMode: 'continuous' });
+  };
+  const showMore = () => { $('more').hidden = [...document.querySelectorAll('.extra')].every(el => el.hidden); };
+  showMore();
+  // Lenses on this side of the phone (ultra-wide, telephoto…). Labels come with camera permission: Android names
+  // them "camera2 N, facing back", iPhone "Back Ultra Wide Camera" plus virtual multi-lens cameras, left out here.
+  navigator.mediaDevices.enumerateDevices().then(list => {
+    const cams = list.filter(d => d.kind === 'videoinput');
+    $('flip').hidden = cams.length < 2;
+    const side = now.facingMode === 'user' ? 'front' : 'back', sided = cams.some(d => /front|back/i.test(d.label));
+    const lenses = cams.filter(d => d.deviceId === now.deviceId ||
+      (!sided || d.label.toLowerCase().includes(side)) && !/dual|triple|desk view/i.test(d.label));
+    $('lensBox').hidden = lenses.length < 2;
+    $('lens').replaceChildren(...lenses.map((d, i) =>
+      new Option(!d.label || /^camera2 /.test(d.label) ? `Lens ${i + 1}` : d.label, d.deviceId)));
+    $('lens').value = now.deviceId;
+    showMore();
+  }).catch(() => {});
+}
+
+function setupRange(id, cap, value, onInput) {
+  $(id + 'Box').hidden = !cap;
+  if (!cap) return;
+  const input = $(id);
+  input.min = cap.min;
+  input.max = cap.max;
+  input.step = cap.step || 'any';
+  input.value = value !== undefined ? value : cap.min;
+  input.oninput = () => onInput(+input.value);
+}
+
+$('torch').onclick = () => {
+  const on = $('torch').getAttribute('aria-pressed') !== 'true';
+  $('torch').setAttribute('aria-pressed', String(on));
+  apply({ torch: on });
+};
+$('autofocus').onclick = () => { $('autofocus').setAttribute('aria-pressed', 'true'); apply({ focusMode: 'continuous' }); };
+$('flip').onclick = () => {  // front ↔ back, each side's default lens
+  const now = (track && track.getSettings().facingMode) || load('facing') || 'environment';
+  save('facing', now === 'user' ? 'environment' : 'user');
+  cameraId = null;
+  save('camera', '');
+  if (cfg) startCamera();
+};
+$('lens').onchange = () => {
+  cameraId = $('lens').value;
+  save('camera', cameraId);
+  if (cfg) startCamera();
+};
+$('more').onclick = () => $('more').setAttribute('aria-pressed', String(document.body.classList.toggle('more')));
+$('power').onclick = () => cfg && send({ type: 'power', on: cfg.on === false });  // the PC owns the switch
+$('rotate').onclick = () => cfg && send({ type: 'rotate', rotate: (cfg.rotate + 90) % 360 });  // the PC owns the setting
+$('dim').onclick = () => { $('black').hidden = false; };
+$('black').onclick = () => { $('black').hidden = true; };
+
+// --- Keep the screen on; the browser pauses the camera in the background ---
+async function keepAwake() { try { if (navigator.wakeLock) await navigator.wakeLock.request('screen'); } catch {} }
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') { send({ type: 'paused' }); return; }  // so the PC can say why video stopped
+  keepAwake();
+  if (cfg && cfg.on !== false && !replaced && !unpaired && (!track || track.readyState === 'ended')) startCamera();
+});
+
+if (!token) {
+  show('Not connected');
+  message('Open this page by scanning the QR code in LocalCam on your PC.');
+} else if (!window.VideoEncoder || !navigator.mediaDevices) {
+  show('Not supported');
+  message('This browser can’t send video. Use Chrome on Android, or Safari on iPhone with iOS 16.4 or later.');
+} else {
+  keepAwake();
+  connect();
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+name: Idea
+description: Suggest a feature or a change
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like LocalCam to do?
+      description: And what you would use it for.
+    validations:
+      required: true
