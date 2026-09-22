@@ -17,7 +17,10 @@ for your PC. No phone app, no account, no cloud. Everything stays on your Wi-Fi,
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563eb" alt="MIT license"></a>
 <img src="https://img.shields.io/badge/PC-Windows%2010%20%7C%2011-2563eb" alt="Runs on Windows 10 and 11">
 <img src="https://img.shields.io/badge/phone-iPhone%20%7C%20Android-2563eb" alt="Works with iPhone and Android">
-<a href="https://buymeacoffee.com/donerfolk"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-ffdd00?logo=buymeacoffee&logoColor=black" alt="Buy me a coffee"></a>
+</p>
+
+<p>
+<a href="https://buymeacoffee.com/donerfolk"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" height="40" alt="Buy Me A Coffee"></a>
 </p>
 
 <p>
