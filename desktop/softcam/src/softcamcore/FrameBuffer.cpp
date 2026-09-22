@@ -12,6 +12,21 @@ const char SharedMemoryName[] = "LocalCam/SharedMemory";
 const uint8_t ProtocolVersion = 2;
 
 
+// Every video app using the camera shares the named mutex, and one that stops while holding it
+// must not freeze the sender. The sender's calls give up after a while and skip their work instead.
+class TimedLock
+{
+ public:
+    explicit TimedLock(NamedMutex& mutex) : m_mutex(mutex), m_owned(mutex.tryLockFor(100)) {}
+    ~TimedLock() { if (m_owned) m_mutex.unlock(); }
+    explicit operator bool() const { return m_owned; }
+
+ private:
+    NamedMutex& m_mutex;
+    bool        m_owned;
+};
+
+
 struct FrameBuffer::Header
 {
     uint32_t    m_image_offset;
@@ -55,7 +70,12 @@ FrameBuffer FrameBuffer::create(
     fb.m_shmem = SharedMemory::create(SharedMemoryName, shmem_size);
     if (fb.m_shmem)
     {
-        std::lock_guard<NamedMutex> lock(fb.m_mutex);
+        TimedLock lock(fb.m_mutex);
+        if (!lock)
+        {
+            fb.m_shmem = {};
+            return fb;
+        }
 
         auto frame = fb.header();
         frame->m_image_offset = sizeof(Header);
@@ -73,16 +93,15 @@ FrameBuffer FrameBuffer::create(
             WATCHDOG_HEARTBEAT_INTERVAL,
             [mutex, frame]() mutable
             {
-                std::lock_guard<NamedMutex> lock(mutex);
-                frame->m_watchdog_sender_heartbeat += 1;
+                if (TimedLock lock{mutex}) frame->m_watchdog_sender_heartbeat += 1;
             });
         fb.m_receiver_watchdog = Watchdog::createMonitor(
             WATCHDOG_MONITOR_INTERVAL,
             WATCHDOG_TIMEOUT,
-            [mutex, frame]() mutable
+            [mutex, frame, last = 0u]() mutable
             {
-                std::lock_guard<NamedMutex> lock(mutex);
-                return frame->m_watchdog_receiver_heartbeat;
+                if (TimedLock lock{mutex}) last = frame->m_watchdog_receiver_heartbeat;
+                return last;
             });
     }
     return fb;
@@ -176,14 +195,14 @@ int FrameBuffer::height() const
 
 float FrameBuffer::framerate() const
 {
-    std::lock_guard<NamedMutex> lock(m_mutex);
-    return m_shmem ? header()->m_framerate : 0.0f;
+    TimedLock lock(m_mutex);
+    return lock && m_shmem ? header()->m_framerate : 0.0f;
 }
 
 uint64_t FrameBuffer::frameCounter() const
 {
-    std::lock_guard<NamedMutex> lock(m_mutex);
-    return m_shmem ? header()->m_frame_counter : 0;
+    TimedLock lock(m_mutex);
+    return lock && m_shmem ? header()->m_frame_counter : 0;
 }
 
 bool FrameBuffer::active() const
@@ -218,14 +237,14 @@ bool FrameBuffer::connected() const
 void FrameBuffer::deactivate()
 {
     if (!m_shmem) return;
-    std::lock_guard<NamedMutex> lock(m_mutex);
-    header()->m_is_active = 0;
+    if (TimedLock lock{m_mutex}) header()->m_is_active = 0;
 }
 
 void FrameBuffer::write(const void* image_bits)
 {
     if (!m_shmem) return;
-    std::lock_guard<NamedMutex> lock(m_mutex);
+    TimedLock lock(m_mutex);
+    if (!lock) return;  // the frame is dropped
     auto frame = header();
     std::memcpy(
             frame->imageData(),

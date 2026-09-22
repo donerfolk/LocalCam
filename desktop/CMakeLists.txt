@@ -22,6 +22,6 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 8)
 
     enable_testing()
     add_executable(localcam_tests src/tests.cpp src/convert.cpp src/decoder.cpp src/server.cpp)
-    target_link_libraries(localcam_tests PRIVATE ws2_32 secur32 crypt32 ncrypt bcrypt mfplat mfuuid wmcodecdspuuid ole32)
+    target_link_libraries(localcam_tests PRIVATE softcam ws2_32 secur32 crypt32 ncrypt bcrypt mfplat mfuuid wmcodecdspuuid ole32)
     add_test(NAME localcam_tests COMMAND localcam_tests)
 endif()

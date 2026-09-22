@@ -33,6 +33,7 @@ class NamedMutex
 
     void        lock();
     void        unlock();
+    bool        tryLockFor(unsigned long msec);
 
  private:
     std::shared_ptr<void>   m_handle;

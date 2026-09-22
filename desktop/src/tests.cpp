@@ -10,11 +10,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "convert.h"
 #include "decoder.h"
 #include "server.h"
+#include "softcam.h"
 
 static int failures = 0;
 #define CHECK(cond)                                                     \
@@ -207,6 +209,32 @@ int main() {
             closesocket(slow);
         }
         deleteTestKey();
+    }
+
+    // The virtual camera: a video app that stops while holding the frame lock it shares with LocalCam must not
+    // freeze LocalCam's calls into softcam. Skipped while a LocalCam camera already exists (LocalCam is running).
+    if (scCamera cam = scCreateCamera(64, 48, 0)) {
+        HANDLE held = CreateEventW(nullptr, TRUE, FALSE, nullptr), done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        std::thread holder([&] {
+            HANDLE lock = CreateMutexA(nullptr, FALSE, "LocalCam/NamedMutex");  // the name in FrameBuffer.cpp
+            WaitForSingleObject(lock, INFINITE);
+            SetEvent(held);
+            WaitForSingleObject(done, 5000);
+            ReleaseMutex(lock);
+            CloseHandle(lock);
+        });
+        WaitForSingleObject(held, INFINITE);
+        std::vector<uint8_t> frame(64 * 48 * 3);
+        const ULONGLONG start = GetTickCount64();
+        scSendFrame(cam, frame.data());
+        scDeleteCamera(cam);
+        CHECK(GetTickCount64() - start < 2000);
+        SetEvent(done);
+        holder.join();
+        CloseHandle(held);
+        CloseHandle(done);
+    } else {
+        std::printf("note: a LocalCam camera already exists, so the camera lock check was skipped\n");
     }
 
     std::printf(failures ? "%d check(s) failed\n" : "all checks passed\n", failures);

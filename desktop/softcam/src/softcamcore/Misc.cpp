@@ -80,6 +80,12 @@ void NamedMutex::lock()
     WaitForSingleObject(m_handle.get(), INFINITE);
 }
 
+bool NamedMutex::tryLockFor(unsigned long msec)
+{
+    DWORD ret = WaitForSingleObject(m_handle.get(), msec);
+    return ret == WAIT_OBJECT_0 || ret == WAIT_ABANDONED;
+}
+
 void NamedMutex::unlock()
 {
     bool ret = ReleaseMutex(m_handle.get());

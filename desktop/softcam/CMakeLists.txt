@@ -1,5 +1,6 @@
 # softcam (MIT, https://github.com/tshino/softcam), vendored from commit 5113173.
-# LocalCam patches: camera name "LocalCam", own CLSID (softcam.cpp), own shared-memory names (FrameBuffer.cpp).
+# LocalCam patches: camera name "LocalCam", own CLSID (softcam.cpp), own shared-memory names (FrameBuffer.cpp),
+# and the sender's calls wait at most 100 ms for the frame lock instead of forever (FrameBuffer.cpp, Misc.cpp).
 # Build files are replaced by this CMakeLists; sources are otherwise unchanged.
 
 add_library(softcam SHARED
