@@ -739,7 +739,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_PAINT: paint(hwnd); return 0;
     case WM_ERASEBKGND: return 1;
-    case WM_CLOSE: ShowWindow(hwnd, SW_HIDE); return 0;  // keep running in the tray: the camera needs us
+    case WM_CLOSE: {  // keep running in the tray: the camera needs us
+        ShowWindow(hwnd, SW_HIDE);
+        static bool told = false;  // closing looks like quitting, so say where LocalCam went, once per run
+        if (!told) balloon(L"LocalCam is still running in the tray, so video apps keep the camera. To quit, right-click the tray icon and choose Exit.");
+        told = true;
+        return 0;
+    }
     case WM_SHOW: showWindow(); return 0;
     case WM_TRAY:
         if (lp == WM_LBUTTONUP) showWindow();
