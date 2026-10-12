@@ -7,6 +7,10 @@
 <p><strong>Use your phone as a webcam on Windows.</strong> Turn any iPhone or Android phone into a high-quality webcam<br>
 for your PC. No phone app, no account, no cloud. Everything stays on your Wi-Fi, encrypted.</p>
 
+<p align="center">
+<a href="https://diestro.dev/tools/localcam/"><strong>Setup guide and download: diestro.dev/tools/localcam</strong></a>
+</p>
+
 <p>
 <a href="https://github.com/donerfolk/LocalCam/releases/latest"><img src="https://img.shields.io/badge/Download%20for%20Windows-2563eb?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0wIDBoMTF2MTFIMHpNMTMgMGgxMXYxMUgxM3pNMCAxM2gxMXYxMUgwek0xMyAxM2gxMXYxMUgxM3oiLz48L3N2Zz4=" alt="Download LocalCam for Windows" height="36"></a><br>
 <sub>Works with Zoom, Microsoft Teams, Google Meet, Discord, OBS, and any app that uses a webcam.</sub>
